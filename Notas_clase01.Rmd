@@ -1,0 +1,631 @@
+---
+title: "Harvard Data Science"
+author: "Guibor Camargo"
+date: "2023-07-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(ggplot2)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Linear Regerssion
+
+## 1.1. Algunas notas recordatorias sobre regresiones bi-variadas.
+
+El "$R^2$" (bodad de ajuste) se puede calcular a partír del cuadrado de la correlación entre $x$ y $y$ :
+
+$$
+R^2 = Cor(x,y)^2
+$$
+
+La pendiente (coeficiente o "$\beta_{1}$) se puede calcular como el producto de la correlación entre las vairables y la división de sus desviaciones estándar (sd o"$\sigma$")
+
+$$
+Cor(x,y)*\frac{\sigma_y}{\sigma_x}
+$$
+
+Una manera facil de calcular correlaciones entre varibles en **R**, puede ser utilizando el comando `summarise()` de **dplyr**.
+
+```{r, message=FALSE, warning=FALSE}
+
+cars %>% 
+  summarise(correlation = cor(speed,dist))
+```
+
+Tambien se puede realizar un *qqplot* para anlizar si una determianda variable sigue una distribución normal:
+
+```{r, warning=FALSE, message=FALSE}
+
+pr <- data.frame(
+  val =rnorm(100,50,10))
+
+pr %>%  ggplot(aes(sample =val))+
+  stat_qq(alpha = .2)+
+  geom_abline(intercept = 50,slope =10, 
+              color  = "red")+
+  theme_minimal()
+
+```
+
+Las correlaciones pueden estar **fuertemente sesgadas** dada la precensia de ouliers, una manera de detectar si correr una correlación cuando hay indicios de ouliers es correr una corrleación de Spearman con el comando "`cor(x,y, method = "spearman")`" que ranquea las observaciones de acuerdo a su orden y luego calcula la correlacion entre estos rankings.
+
+```{r, message=FALSE,warning=FALSE, fig.align='center'}
+set.seed(2000)
+outliers <- data.frame(
+  id = 1:100,
+  base = "Con outliers\n(cor = 0.9727663)\n(Spearman cor = 0.030)",
+  x = c(rnorm(99,50,10),500),
+  y = c(rnorm(99,20,5),500)) %>% 
+  rbind(.[] %>% filter(id != 100) %>% 
+          mutate(base = "Sin outliers\n(cor = 0.006)\n(Spearman cor = 0.0009)"))
+
+outliers %>% 
+  ggplot(aes(x,y)) +
+  geom_point()+
+  geom_smooth(method = "lm")+
+  labs(title = as.character())+
+  facet_wrap(.~base, scales = "free")+
+  theme_minimal()
+```
+
+Otras fuetnes de sesgo pueden ser **causalidad inversa**, **hendogeneidad**, y variables no observadas (**cofouders**). Estos ultimos existen cuando una variable "$z$" puede estar relacionada tanto con "$y$" como con "$x$". Para ilustrar mejor esto condiremos las siguientes ecuaciones como ciertas o poblacionales.
+
+$$
+(eq1)\space\space\space y_i = 10+4(x_i)-7(z_i)+e_i
+$$ $$
+(eq2)\space\space\space x_i = 20+5(z_i)+u_i
+$$
+
+En pocas palabras tenemos que "$y$" depende de "$x$" y "$z$", y a su véz "$x$" depende de "$z$": Entonces "$z$" es un confonder tanto de "$x$" como de "$y$". No obstatne, supongamos que no obserbamos "$z$" sino que estimamos "$y$" solo utilizando a "$x$" como variable predictiva:
+
+$$
+(eq3)\space\space\space\space \hat{y_i}= \alpha+\beta x_i+e_i
+$$
+
+## 1.2. La librearia "broom"
+
+La libreria **broom**, permite converitr los resultados un modelo (\``lm()`\`) en una base tipo *tidy-pipe friendly*. Para este ejemplo correremos un modelo simple:
+
+```{r, message=FALSE, warning=FALSE}
+# 1. Cargar una base de datos cualquiera
+library(dplyr)
+pr <- Lahman::Batting %>%
+  mutate(pa = AB + BB, 
+         singles = (H - X2B - X3B - HR)/pa, 
+         bb = BB/pa) %>%
+  filter(pa >= 100)
+
+# 2. Correr un modelo
+
+m1 <- lm(singles ~ bb, pr)
+
+# 3. Extrer resultados con "broom"
+broom::tidy(m1)
+```
+
+Tambien se pueden agregar otros argumentos dentro de la misma función, como si mostrat o no los intervalos de confianza (`conf.int`) y el nivel de confianza de estos intervalos (`conf.level`). Tambine puedes agregar variables propias pues la librearia es *pipe-friendly*.
+
+```{r}
+broom::tidy(m1,conf.int = T, conf.level = .99) %>% 
+  mutate(ejemplo = ":)")
+```
+
+Incluso se puede así enbeber varios modelos simultaneos:
+
+```{r, message=FALSE, warning=FALSE, fig.align='center'}
+pr %>% 
+  # 1. Correr una regresión para cada año
+  group_by(yearID) %>% 
+  summarise(broom::tidy(lm(singles~bb), conf.int = T)) %>% 
+  
+  # 2. Graficar el resultado
+  filter(term != "(Intercept)") %>% 
+  ggplot(aes(yearID, y = estimate,
+             ymin = conf.low,ymax =conf.high))+
+  geom_errorbar(color = "grey")+
+  geom_point()+
+  geom_hline(yintercept = 0,lty = 2, color = "red")+
+  theme_minimal()
+
+```
+
+## 1.3. Lo objetos lm()
+
+Es importante recordar que cuadno corremos un modelo con "`lm()`", el objeto que generamos funciona similar a una API, con la que podemos hacer consultas individuales o en batch.
+
+```{r, warning=FALSE, message=FALSE}
+# 1. Crear una base cualquiera
+Teams_small <- Lahman::Teams %>% 
+  filter(yearID %in% 1961:2001) %>% 
+  mutate(avg_attendance = attendance/G,
+         R_per_game = R/G,
+         HR_per_game = HR/G)
+
+# 2. Crear el modelo
+m1 <- lm(avg_attendance~R_per_game+HR_per_game+W+yearID, 
+         data = Teams_small)
+
+# 3. Predicciones
+# 3. Generar una prediccion
+predict(m1, 
+        data.frame(
+          R_per_game =5,
+          HR_per_game =1.2,
+          W =80,
+          yearID=1960))
+
+# 4. Generar predicciones en batch
+
+```
+
+# 2. Machine Learning
+
+```{r}
+heights <- dslabs::heights
+library(caret)
+
+
+# define the outcome and predictors
+y <- heights$sex
+x <- heights$height
+
+#
+set.seed(2007)
+test_index <- createDataPartition(y, times = 1, p = 0.5, list = FALSE)
+test_set <- heights[test_index, ]
+train_set <- heights[-test_index, ]
+```
+
+## 2.1. Métricas de valoración
+
+Hay multiples metircas para medir el desempeño de un algorítmo, y la mayoría de ellas se pueden calcular a través de la matriz de confusión. Sin embargo, hay 6 medidas que son importantes tener siempre muy presente:
+
+1.  [**Accuracy:**]{.underline} Es la métrica más global y es el **porcentage de casos positivos y negativos bien asignados**. Tambien llamada "**overall accuracy**".
+
+    $$
+    \frac{TP+TN}{N}
+    $$
+
+2.  [**Sensitiviy / Recall:**]{.underline} The percentage of **true** **positive cases** that the algorithm was able to detect (aslo called **true positive rate**):
+
+    $$
+    \frac{TP}{TP+FN}
+    $$
+
+3.  [**Specificity:**]{.underline} In contrast, is the percentage of **true negative cases** that the algorithm was able to detect (aslo called **true negative rate**):
+
+    $$
+    \frac{TN}{TN+FP}
+    $$
+
+4.  [**Precision:**]{.underline} Is just the pecentage of precitions that are called positive: the **percetage of predictions** **that are positive** (also called PPT: positive predictive value)
+
+    $$
+    \frac{TP}{TP+FP}
+    $$
+
+5.  [**Prevalence:**]{.underline} is the perecetage od tru positive cases in the data.
+
+6.  [**F1 score:**]{.underline} The F1 score, es a combinaotion of both sensitivity and specificity. This combination is done trouhg a harmonic average bewtween both metrics
+
+    $$
+    \frac{1}{\frac{1}{2}*(\frac{1}{recall}+\frac{1}{precision})}
+    $$
+
+## 2.2. Teorema Bayes
+
+### 2.1.1. Explicación general
+
+El teorema de Bayes nos permite determinar la probabilidad de condicional de un evento **A**, dada la ocurrencia de u evento **B**, integrando información nueva que conocemos de estos eventos. Es decir, integrando información que conocemos o vamos conociendo sobre la naturaleza de estos eventos. Hay multimples videos explicando este teorema, pero uno de los mejores es el siguiente de [Veritasium](https://www.youtube.com/watch?v=D7KKlC0LOyw&ab_channel=Veritasiumenespa%C3%B1ol ""Cómo Escapar de la Trampa Bayesiana""). El teorema de Bayes es el siguiente:
+
+$$
+P(A|B) = \frac{P(B|A)*P(A)}{P(B)}
+$$
+
+Vamos por partes:
+
+-   $P(A|B)$ es la probabilidad de que **A** ocurra dado que **B** ya ocurrio.
+
+-   $P(B|A)$ es la probabilidad de que **B** ocurra dado que **A** ya ocurrio.
+
+-   $P(A)$ es la probilidad de que **A**, al igual que $P(B)$ es la probabilidad de que **B** ocurra.
+
+### 2.1.2. Repaso de operaciones con probabilidades
+
+Antes entender a profunidad el teorema, no esta mal repasar algunas nociones de probabilidad.
+
++--------------------------+--------------------------+----------------------------------------------------------------------------------------+
+| Operacion                | Nombre                   | Descripción                                                                            |
++==========================+==========================+========================================================================================+
+| Suma:                    | Unidon de probabilidad   | La probabilidad de que uno de los dos eventos ocurra.                                  |
+|                          |                          |                                                                                        |
+| $$                       |                          | Supuesto: los eventos son independientes, de otra manera, la union se calcularia así:  |
+| P(A)+P(B) = A \cup B     |                          |                                                                                        |
+| $$                       |                          | $P(A)+P(B)-[P(A)*P(B)]$                                                                |
++--------------------------+--------------------------+----------------------------------------------------------------------------------------+
+| Multiplicación:          | Probabilidad simultanea  | Es la probabilidad de que dos ocurran simultaneamente.                                 |
+|                          |                          |                                                                                        |
+| $$                       |                          |                                                                                        |
+| P(A)*P(B) = A \cap B     |                          |                                                                                        |
+| $$                       |                          |                                                                                        |
++--------------------------+--------------------------+----------------------------------------------------------------------------------------+
+| División:                | Probabilidad condicional | Es la probabilidad de que un evento **A** ocurra, dado que el evento **B** ya ocurrió. |
+|                          |                          |                                                                                        |
+| $$                       |                          |                                                                                        |
+| \frac{P(A)}{P(B)}=P(A|B) |                          |                                                                                        |
+| $$                       |                          |                                                                                        |
++--------------------------+--------------------------+----------------------------------------------------------------------------------------+
+
+### 2.1.3. Ejemplo
+
+Vas al medico para hacerte un test sobre si tienes o no un enfermedad.
+
+-   La prevalencia de la enferemdad en la población es del 2% (2% de la población tiene la enferemdad).
+
+-   El test es positivo en 85% de las personas que tiene la enferemedad.
+
+-   El test es negativo en el 90% de las personas que no tiene la enferemdad.
+
+¿Cuál es la probabilidad de que (**A**) tengas relamente la enferemedad dado que (**B**) el test salio positivo : $P(A|B)$?
+
+Segun el teorema de Bayes tenemos entonces que:
+
+$$
+P(Estar \space infectado|Test^{(+)}) = \frac{P(Test^{(+)}|Estar\space infectado)*P(Estar\space infectado)}{P(Test^{(+)})}
+$$
+
+Antes de resolver el ejercicio entendamos un poco mejor qué estamos haciendo. Para esto recordemos que dos cosas: que la multimplicación de probabilidades es empleada para estimar la simultaneadad de dos eventos, y que la suma de probabilidaes es para estimar que uno de los eventos ocurra. Si conceptualizamos esto a un nivel más simple tenemos que la ecuación anterior resuelve lo siguiente:
+
+$$
+P(Estar \space infectado|Test^{(+)}) = \frac{Enferemos\space que\space esperamos\space efectivamente\space detectar}{Numero\space de\space test\space positivos^{(+)}\space esperados}
+$$
+
+El teorme de Bayes nos permite integrar entonces nueva información para calcular una proabilidad condicional. Pero ¿Cuál es la nueva información que estamos agregando con el Teorema de Bayes? En este caso es la **prevalencia de la enferemdad población**. Decompongamos esta acuació.
+
+-   **Numerador:** El test tiene una acertividad del 85% y la prevalencia de la enfermedad en la población es del 2%: Esto quiere decir que del 2% de la población que puede tener la enferemdad, realmente esperamos detectar solo el 85% de los casos: es decir, 1.7% de la población.
+
+-   **Denominador:** Pero ¿cuantos test positivos esperamos obtener?
+
+    -   En el caso de las personas enfermas, esperamos que 85% del 2% de la población infectada arrojen un test positivo: esto es nuevamente el **1.7%** (Verdaderos positivos).
+
+    -   En el caso de las personas saludables, esperamso que del 98% que no esten enfermas, al menos un 10% arrojen un test positivo, esto es el **9.8%** (Falsos positivos).
+
+    -   En total, esperamos que halla un resultado positivo del test (1.7%+9.8 = 11.5%) de las veces.
+
+Agregando las partes en una solución tenemos entonces que:
+
+$$
+P(Estar \space infectado|Test^{(+)}) = \frac{0.85*0.2}{(0.85*0.02)+(0.1*0.98)} = 0.147
+$$
+
+Si queremos ejempliciar este ejemplo en un población de 1,000 personas, tenemos que el test identificaria a 17 personas de 20 potencialmente contagiadas, pero arrojaría un total de 115 test con resultado positivo. Es decir, que de las 115 personas con un test positivo, solo 17 son realmente infectados, por lo que la probabilidad de estar realmetne contagiado dado un resultado positivo en el test, esde el 14,7%, tal como se puede ver en la gráfica a continuación.
+
+```{r, echo=FALSE,warning=FALSE, message=FALSE, fig.align='center'}
+expand.grid(
+  x=1:40,
+  y=1:25) %>% 
+  as.data.frame() %>% 
+  mutate(cat = 
+           c(rep("Saludablees detectados\n(Verdaeros negativos)",882),
+             rep("Enfermos no detectados\n(Falsos negativos)",3),
+             rep("Saludables marcados como enfermos\n(Falsos positivos)",98),
+             rep("Enfermos detectados\n(Verderos positivos)",17))) %>%
+  group_by(cat) %>% 
+  mutate(n = row_number(),
+         n = ifelse(cat == "Saludablees detectados\n(Verdaeros negativos)",NA,n)) %>% 
+  ggplot(aes(x,y,color = cat))+
+  scale_x_reverse()+
+  geom_point(aes(size = cat))+
+  scale_color_manual(values = c("red","black","grey","orange"))+
+  scale_size_manual(values = c(5,4,2,5))+
+  geom_text(aes(x,y,label = n), color = "white", size = 2)+
+  labs(color = "",x ="" ,y = "")+
+  theme_void()+
+  theme(text = element_text(family = "serif"),
+        legend.position = "bottom",
+        plot.subtitle = element_text(face = "italic",size = 7, color ="grey40"),
+        axis.text = element_blank(),
+        plot.background = element_rect(fill = "white", color = "white"))+
+  guides(size = "none")
+```
+
+# 3. Algunos algortimos
+
+## 3.1. Smoothing
+
+Las regresión lineal puede no siempre ser una buena manera de clasificar/identificar patrones. Esto pues en ultimas es solo "una linea recta", y en diversas ocaciones podemos econtrarnos con que una línea recta (o en general un hiperplano cuadno hay más de 2 dimensiones), no genera un buen redimiento del modelo. En este sentido, se puede **relajar** el supuesto de linealidad de estos modelos a través de técnicas de ***suavizado*** o ***smoothing**.*
+
+```{r}
+ksmooth(cars$speed, cars$dist, kernel = "box", 
+        bandwidth = 2)
+```
+
+## 3.2. K-Nearest Neighbors (kNN)
+
+Es uno de lo más famosos algórtimos de Machine-Learning, que básicamente evalua, dado un espacio dimencional construido por las varaibles predictoras ($X'$), la probabilidad de $Y_i=1$, a partir de las vecindades. Para aplicar el algórtimo podemos usar el siguiente código:
+
+```{r, message=FALSE, results='asis',warning=FALSE, echo=TRUE}
+library(dslabs)
+data("mnist_27")
+
+# 1. Corremos el algórtimo
+m.knn <- knn3(
+  ## 1.1. Definimos la ecuación de predicción
+  y~.,
+  ## 1.2. Datos
+  data = mnist_27$train, 
+  ## 1.3. Establecemos el númeor de vecinos
+  k = 5)
+
+
+# 2. Predicción
+m.test <- predict(
+  # 2.1. Modelo
+  m.knn,
+  # 2.2. Base target
+  mnist_27$test, 
+  # 2.3. Tipo de predicción ("class" o "prob")
+  type = "class")
+
+
+# 3. Evaluamos el modelo
+confusionMatrix(
+  # 3.1. Predichos sobre el test-set
+  m.test,
+  # 3.2. Reales del test-set
+  mnist_27$test$y)
+```
+
+Como cualquier modelo de predicción, podemos simular un espacio vectorial y ver como se comporta en el la predicción:
+
+```{r, warning=FALSE, message=FALSE, echo=TRUE, fig.align='center'}
+# 4. Graficar predicción
+expand.grid(
+  ## 4.1. Matriz de permutaciones de regresores
+  x_1 = seq(0,.6,.005),
+  x_2 = seq(0,.6,.005)) %>% 
+  as.data.frame() %>% 
+  mutate(across(x_1:x_2,~as.numeric(.))) %>% 
+  
+  ## 4.2. Predecir sobre la matriz
+  mutate(
+    pr = predict(
+      ### a. modelo
+      m.knn,
+      ### b. base
+      .[],
+      ### c. tipo de predicción
+      type = "prob")[,1]) %>%
+  ## 4.3. Graficar
+  ggplot() +
+  ### i. Raster
+  geom_raster(aes(x_1,x_2,fill = pr)) +
+  stat_contour(aes(x_1, x_2, z = pr), breaks=c(0.5), color="white") +
+  ### ii. Puntos reales
+  geom_point(data = mnist_27$test, aes(x = x_1, y = x_2, color = y))+
+  ### iv. Estilo
+  scale_fill_gradient(low = c("cyan4"),high = "red4")+
+  scale_color_manual(values = c("black","grey"))+
+  coord_equal()+
+  theme_minimal()+
+  labs(title = "Predicción por kNN", fill = "Pr|2") 
+```
+
+# 5. El paquete Caret
+
+La librería "[Caret](https://topepo.github.io/caret/index.html)" (**C**lassification **A**nd **RE**gression **T**raining), contiene más de [230 modelos](https://topepo.github.io/caret/available-models.html) diferntes integrados que pueden usarse para entrenar facilmente casi cualquier tipo de modelo de regresió o ML. Esta libreria se acutaliza constantemente, y una exelente herramienta para entrenar multies modelos bajo un estrcutura de código similar. Para arrancar vamos autilizar la siguientes librerias ademas de "**Caret**":
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(caret)
+```
+
+## 1.0. Base sintética para las pruebas
+
+Para empezar vamos a alamacenar en el objeto '`datos`' una base sintética de 1,000 observaciones la cual tiene:
+
+-   Una variable '$y$' dicotomica balanceada: *500* "unos" y *500* "ceros".
+
+-   Dos variables continuas, '$x1$' y '$x2$', relacionadas con '$y$' positiva y negativamente respectivamente.
+
+-   Dos variables aleatorias '$x3$' y '$x4$', no relacionadas con '$y$'; la primera con una distribución normal, y la segunda con una distribución uniforme.
+
+El código para generar esta *base sintética**,*** así como tambien un resumen estadístico de la misma, puedes consultarlos en **material complementario** sección "a". A continacuón puedes ver algunas características de la base.
+
+```{r data_sitetica, echo=FALSE, message=FALSE, warning=FALSE}
+{
+set.seed(1)
+datos <- data.frame(
+  id = 1:1000,
+  # La variable predictora es una dicotomica balanceada
+  y = c(rep(1,500),rep(0,500))) %>% 
+  
+  # Tenemos 2 variables predictoras relacionadas
+  mutate(
+    ## 1. Directametne proporcional
+    x1 = c(rnorm(750,40,20),rnorm(250,20,20)),
+    ## 2. Inversamente proporcional
+    x2 = c(rnorm(800,10,2),rnorm(200,20,2))) %>% 
+  # Y tenemos 2 Variables aleatorias
+  mutate(
+    ## 1. Distribución normal
+    x3 = rnorm(1000,50,10),
+    ## 2. Distribución uniforme
+    x4 = runif(1000,20,50))}
+
+```
+
+```{r eda_base, message=FALSE, warning=FALSE,echo=FALSE, fig.align='center',fig.height=4}
+
+set.seed(1)
+m0 <- lm(y~x1+x2+x3+x4, datos %>%
+       mutate(y = as.numeric(y)))
+
+r2 = summary(lm(y~x1+x2+x3+x4, datos %>%
+       mutate(y = as.numeric(y))))[8] %>% 
+  unlist()
+
+
+ggpubr::ggarrange(
+broom::tidy(m0, conf.int = T) %>% 
+  filter(term != "(Intercept)") %>% 
+  mutate(term = factor(term, levels = c(paste0("x",seq(4,1,-1)),"y"))) %>% 
+  ggplot(aes(estimate, term))+
+  geom_point()+
+  geom_errorbar(aes(xmin = conf.low,xmax =conf.high, y = term),
+                width = .1)+
+  geom_vline(xintercept = 0,lty = 2,color = "cyan3")+
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = .5, size = 8))+
+  labs(x = "Coeficiente",y = "variable",
+                       title = "Coefplot",
+                       caption = paste("lm r2 = ",round(r2,3))),
+
+datos %>%
+  select(-id) %>% 
+  mutate(y = as.numeric(y)) %>%
+  cor() %>%   as.data.frame() %>%
+  tibble::rownames_to_column() %>%
+  reshape2::melt(id.vars = 1) %>%
+  mutate(across(rowname:variable,
+                ~factor(., levels = c(paste0("x",seq(4,1,-1)),"y")))) %>%
+  ggplot(aes(rowname, variable, fill = value))+
+  geom_tile()+
+  geom_text(aes(rowname, variable,
+                label = scales::percent(value, accuracy = 0.1)),
+            size = 3,color = "white")+
+  scale_fill_gradient2(low = "darkblue",
+                       mid = c("darkblue","grey40","orangered"),
+                       high = "red4", midpoint = 0)+
+  scale_x_discrete(limits = rev(c(paste0("x",seq(4,1,-1)),"y")))+
+  theme_minimal()+labs(x="",y = "", title = "Matriz de correlciones\n(Pearson)")+
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = .5, size = 8)), nrow = 1)
+```
+
+## 1.1. Particionar la data
+
+Para realizar posteriores pruebas de "corss-validation", es necesario particionar la data en un base de entrenamiento (***training set***) y un set donde testearemos nuestro algórimo una vez entrenado y optimizado (**testint set**).
+
+Esto lo podemos hacer con la función `caret::createDataPartition()`. Para esto es necesario tener en cuenta dos puntos importantes:
+
+1.  **¡¡¡Define una semila!!!:** antes que nada define una semilla para crear la partición, sino será luego casi imposible replicar tus resultados y compartirlos con los demas.
+2.  Cambia y por un factor: La mayoira de los modelos exigen que la/s variable a predicir este en foramto "**factor**"
+3.  Cuando selecciones la base a particionar, tambien define la variable a balancear: "`base$variable_y`" o tambien puede ser "`base$variable_a_balancear`"
+
+```{r}
+# 1. Pasos previos:
+{ ## 1.1. DEFINIR SEMILA (¡¡¡OJO!!!)
+  set.seed(1)
+  
+  ## 1.2. Cambiar 'y' a "factor"
+  datos$y <- as.factor(datos$y)
+  
+  
+# 2. Particion de los datos:
+  ## 2.1. Paricionamos sobre "y"
+  indx <- createDataPartition(
+    datos$y, # Que variable debe estar balanceada
+    times = 1, # Cuantas sub-muestras aleatoiras
+    p = .7, # Que porcentage para training
+    list = F) # El deoult es una matriz, pero se puede cambiar a lista
+  
+  # 2.2. Creamos los sets con los índices
+  train_set <- datos[indx,]
+  test_set <- datos[-indx,]}
+
+
+# 3. BONUS: Definir la ecuacion general como formula
+    ## puede ser útil mas adelante
+eq1 = as.formula("y~x1+x2+x3+x4")
+```
+
+asdas
+
+```{r}
+
+m1 <- train(eq1, method = "glm", data = train_set)
+
+confusionMatrix(m1)
+predict(m1, test_set, type = "prob")
+
+
+modelLookup("nnet")
+
+confusionMatrix(predict(m1, test_set),test_set$y)
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+# modelLookup("knn")
+# 
+# ## Training the mode %>% %>% %>% %>% %>% %>% %>% %>% %>% %>% l
+# pr_m <- train(equation_1, method  = "knn", data = b0_training,
+#               tuneGrid = data.frame(k = seq(2,150,2)))
+# 
+# ## Confirmind model charateristics
+# pr_m$method
+# pr_m$results
+# ## Fin the best hiperparameter
+# pr_m$bestTune
+# ggplot(pr_m, highlight = T)+
+#   theme_minimal()
+# 
+# pr_m$finalModel
+# getModelInfo("knn")
+# modelLookup("rf")
+# modelLookup("knn")
+# modelLookup("neuralnet")
+
+```
+
+# Material complementario
+
+## a. Base sintética primera parte
+
+```{r}
+# datos %>% 
+#   reshape2::melt(id.vars = 1) %>%
+#   group_by(variable) %>%
+#   summarise(n = n(),
+#             mean = mean(value),
+#             sdt = sd(value),
+#             min = min(value),
+#             max = max(value)) #%>% 
+#   mutate(across(mean:max,~round(.,1))) %>% 
+#   kableExtra::kbl("html") %>%
+#   kableExtra::kable_styling(full_width = FALSE)
+```
+
+```{r mc_base_sintetica_1ra_parte, echo=TRUE, eval=FALSE}
+{
+set.seed(1)
+datos <- data.frame(
+  id = 1:1000,
+  # La variable predictora es una dicotomica balanceada
+  y = c(rep(1,500),rep(0,500))) %>% 
+  
+  # Tenemos 2 variables predictoras relacionadas
+  mutate(
+    ## 1. Directametne proporcional
+    x1 = c(rnorm(750,40,20),rnorm(250,20,20)),
+    ## 2. Inversamente proporcional
+    x2 = c(rnorm(800,10,2),rnorm(200,20,2))) %>% 
+  # Y tenemos 2 Variables aleatorias
+  mutate(
+    ## 1. Distribución normal
+    x3 = rnorm(1000,50,10),
+    ## 2. Distribución uniforme
+    x4 = runif(1000,20,50))}
+```
+
+# Notas
+
+Hasta ahora hemos aprendidos algórtimos que imponen una forma funcional sobre los datos (lm, glm, knn, etc...). Es decir, algórtimos que asumen que el comportamiento de un fenómeno es similar a una función pre-definida, y luego lo que realizamos es una valoración de cuál de estas formas funcionales pre-definidas tiene un mejor ajuste/predicció. Estos modelos son llamados en ML [**modelos discriminativos**]{style="color:blue;"}.
+
+Contrario a estos modelos, estan los [**modelos generativos**]{style="color:red;"}. Modelos que tiene en cuenta la distribución estadística de los predictores y/o la distribución conjunta (*joint distribution*) de '$y$' y '$X'$'.
